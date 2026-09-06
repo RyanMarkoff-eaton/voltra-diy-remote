@@ -1,0 +1,9 @@
+.pio/
+.platformio/
+logs/
+include/LocalConfig.h
+*.bin
+*.elf
+*.map
+.vscode/
+.DS_Store

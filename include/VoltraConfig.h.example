@@ -1,0 +1,5 @@
+#pragma once
+
+// Copy this file to LocalConfig.h, then set your Voltra's BLE address.
+// Do not commit LocalConfig.h to a public repository.
+#define VOLTRA_BLE_ADDRESS "AA:BB:CC:DD:EE:FF"
