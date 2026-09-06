@@ -82,6 +82,27 @@ On boot, the remote scans for the configured Voltra, completes the BLE
 handshake, and reads settings without applying weight. The bottom status changes
 to `BLE CONNECTED` when ready.
 
+## Usage
+
+1. Turn on the Voltra, place it in **Weight Training** mode, and make sure it
+   is not actively loading resistance.
+2. Power the remote over USB. It scans for the address in `LocalConfig.h`; wait
+   for `BLE CONNECTED`. If it remains offline, confirm the address, that the
+   Voltra is awake and nearby, and that another app is not holding its BLE
+   connection.
+3. Turn the encoder to choose a requested base weight. The screen shows the
+   requested value separately from settings read back from the Voltra. Turning
+   the encoder alone does not engage resistance.
+4. Tap the large weight number once to request the normal activation sequence.
+   Tap it again, or tap **STOP**, to unload. Always confirm the actual Voltra
+   response before beginning an exercise.
+5. Hold the large weight number for one second only when deliberately testing
+   the experimental guided-load behavior. A successful BLE write does not prove
+   that the Voltra accepted or reached that motor state.
+
+The remote never sends an activation, resistance, GO, or load command merely
+because it boots or reconnects.
+
 ## Controls
 
 - **Rotate main screen:** adjust base weight.
