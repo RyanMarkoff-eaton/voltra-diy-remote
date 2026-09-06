@@ -4,6 +4,12 @@ Standalone firmware for the Elecrow ESP32-S3 2.1-inch 480×480 rotary touch
 screen. It connects directly to a VOLTRA I over Bluetooth Low Energy; it does
 not require Wi-Fi, a phone, a Raspberry Pi, or a Flipper.
 
+## Screenshots
+
+| Main controls | Drop-set settings |
+| --- | --- |
+| ![Main controls showing weight, modifiers, and BLE connection](docs/screenshots/main-controls.png) | ![Drop-set configuration screen](docs/screenshots/drop-sets.png) |
+
 > [!WARNING]
 > This is an unofficial, hardware-dependent prototype. It can change resistance.
 > Keep the Voltra controls accessible, begin unloaded or at low resistance, and
