@@ -10,6 +10,26 @@ not require Wi-Fi, a phone, a Raspberry Pi, or a Flipper.
 > stop using it if device behavior differs from the screen. BLE write success is
 > not proof that Voltra applied a motor state.
 
+## Safety, warranty, and support
+
+This project is an independent community project. It is not made by, endorsed
+by, or supported by Beyond Power. Use it only if you understand the risks of
+controlling exercise resistance with experimental firmware. You accept
+responsibility for assembly, configuration, operation, and any resulting
+damage, injury, warranty impact, or data loss. This repository provides no
+warranty or guarantee of fitness for a particular purpose.
+
+Test every change with the cable unloaded and at a low resistance before using
+it for training. Do not rely on the screen as the source of truth for an active
+load; keep the Voltra controls within reach and stop immediately if the actual
+device state differs from the remote.
+
+If the remote does not work with your hardware or Voltra firmware, please
+[fork this repository](https://github.com/RyanMarkoff-eaton/voltra-diy-remote/fork)
+and make the changes in your own copy. Forking keeps your hardware-specific
+settings and experiments separate, and makes it easy to propose a tested fix
+back to this project through a pull request.
+
 ## Hardware
 
 The display implementation targets the PCB marked **ESP32 Display 2.1 V1.0**:
@@ -33,8 +53,9 @@ flash the `elecrow21_ui` environment until you have confirmed this board.
 - Touch activation, long-hold experimental guided load, and a dedicated STOP
   touch target.
 - Eccentric, Chains, and Inverse Chains controls with colored rings and saved
-  values. Inverse Chains remains device-dependent and is refreshed by a
-  read-only settings query while idle.
+  values. **Inverse Chains is currently known not to apply reliably on the
+  Voltra**; it is refreshed by a read-only settings query while idle and should
+  be treated as unavailable until it is validated on your firmware.
 - Drop-set screen: configurable drop amount and delay after the last detected
   cable return.
 - Optional 15-minute auto sleep. It only enters deep sleep while the controller
