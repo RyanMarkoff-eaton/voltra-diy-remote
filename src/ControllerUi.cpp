@@ -100,17 +100,12 @@ static void modifierArc(int radius,int value,int base,bool enabled,uint16_t acce
   if(value>0) arc(radius,-90,-90+degrees,5,shown);
   else arc(radius,-90-degrees,-90,5,shown);
 }
-static void modifierPercentArc(int radius,int percent,bool enabled,uint16_t accent) {
-  if(percent<=0) return;
-  int degrees=constrain(lroundf(percent*359.0f/100.0f),1,359);
-  arc(radius,-90,-90+degrees,5,enabled?accent:color(65,65,70));
-}
 static void textCentered(const char* text,int y,uint8_t size,uint16_t c) {
   screen.setTextSize(size); screen.setTextColor(c); screen.setCursor(240-int(strlen(text)*3*size),y);
   screen.print(text);
 }
 static void modifierRow(int y,const char* label,int value,int base,int confirmed,bool enabled,
-                        uint16_t accent,UiSelection row,bool percentOnly=false) {
+                        uint16_t accent,UiSelection row) {
   bool active=selected==row;
   uint16_t edge=enabled?accent:color(70,70,70);
   if(active) screen.fillRoundRect(70,y-4,340,42,18,color(40,40,40));
@@ -118,9 +113,7 @@ static void modifierRow(int y,const char* label,int value,int base,int confirmed
   screen.fillCircle(91,y+17,7,edge);
   screen.setTextSize(2); screen.setTextColor(edge); screen.setCursor(108,y+9); screen.print(label);
   int pct=base?lroundf(value*100.0f/base):0;
-  char amount[30];
-  if(percentOnly) snprintf(amount,sizeof(amount),"%d%%",value);
-  else snprintf(amount,sizeof(amount),"%+d lb  %+d%%",value,pct);
+  char amount[30]; snprintf(amount,sizeof(amount),"%+d lb  %+d%%",value,pct);
   screen.setTextColor(color(235,235,235)); screen.setCursor(235,y+9); screen.print(amount);
   int effective=enabled?value:0;
   screen.setTextSize(1); screen.setTextColor(confirmed==effective?color(100,210,130):color(180,150,80));
@@ -170,8 +163,8 @@ static void render(int weight,int eccentric,int chains,int inverseChains,
   int weightDegrees=weight>=5 ? lroundf((constrain(weight,5,230)-5)*359.0f/225.0f) : 0;
   if(weightDegrees>0) arc(223,-90,-90+weightDegrees,10,color(110,178,226));
   modifierArc(211,eccentric,weight,eccentricEnabled,color(255,145,55));
-  modifierPercentArc(201,chains,chainsEnabled,color(55,205,225));
-  modifierPercentArc(191,inverseChains,inverseChainsEnabled,color(185,105,255));
+  modifierArc(201,chains,weight,chainsEnabled,color(55,205,225));
+  modifierArc(191,inverseChains,weight,inverseChainsEnabled,color(185,105,255));
   screen.fillRoundRect(198,67,84,30,15,color(105,25,30));
   textCentered("STOP",75,2,color(255,205,205));
   if(weight>=5) {
@@ -188,8 +181,8 @@ static void render(int weight,int eccentric,int chains,int inverseChains,
     textCentered(connected?"READING VOLTRA":"BLE OFFLINE",185,2,color(130,130,140));
   }
   modifierRow(286,"ECC",eccentric,weight,confirmedEccentric,eccentricEnabled,color(255,145,55),UiSelection::Eccentric);
-  modifierRow(330,"CHAIN",chains,weight,confirmedChains,chainsEnabled,color(55,205,225),UiSelection::Chains,true);
-  modifierRow(374,"INV",inverseChains,weight,confirmedInverseChains,inverseChainsEnabled,color(185,105,255),UiSelection::InverseChains,true);
+  modifierRow(330,"CHAIN",chains,weight,confirmedChains,chainsEnabled,color(55,205,225),UiSelection::Chains);
+  modifierRow(374,"INV",inverseChains,weight,confirmedInverseChains,inverseChainsEnabled,color(185,105,255),UiSelection::InverseChains);
   textCentered(connected?"BLE CONNECTED":"BLE OFFLINE",425,1,connected?color(100,190,240):color(140,140,140));
   screen.flush();
 }

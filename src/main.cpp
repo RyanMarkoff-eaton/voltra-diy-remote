@@ -33,10 +33,7 @@ int requestedEccentric=0, requestedChains=0, requestedInverseChains=0;
 bool eccentricEnabled=false, chainsEnabled=false, inverseChainsEnabled=false;
 bool eccentricInitialized=false, chainsInitialized=false, inverseChainsInitialized=false;
 volatile int confirmedWeight=-32768, confirmedEccentric=-32768;
-// Chains and inverse chains are one device feature: a shared percentage plus
-// a direction selector. Do not treat the direction byte as a pound amount.
-volatile int confirmedChainPercent=-32768;
-volatile int8_t confirmedChainDirection=-1, confirmedChainVariant=-1;
+volatile int confirmedChains=-32768, confirmedInverseChains=-32768;
 volatile uint32_t weightConfirmedAt=0;
 int pendingWeightDelta=0;
 bool targetInitialized=false;
@@ -73,80 +70,75 @@ void updateConfirmedMode(uint8_t raw) {
   }
 }
 
-int settingWidth(uint16_t id) {
-  switch(id) {
-    case 0x4fb0: case 0x53b0: case 0x556f: return 1;
-    case 0x3e86: case 0x3e87: case 0x3e88: case 0x3e89:
-    case 0x5551: case 0x5552: return 2;
-    case 0x54da: case 0x53d0: case 0x556a: case 0x556b: return 4;
-    default: return 0;
-  }
-}
-
-void reconcileChainUi() {
-  if(confirmedChainPercent<0 || confirmedChainDirection<0 || confirmedChainVariant<0) return;
-  const int percent=constrain((confirmedChainPercent+50)/100,0,100);
-  const bool supported=confirmedChainVariant==0;
-  if(confirmedChainDirection==0) {
-    requestedChains=percent;
-    chainsEnabled=supported && confirmedChainPercent>0;
-    inverseChainsEnabled=false;
-    chainsInitialized=inverseChainsInitialized=true;
-  } else if(confirmedChainDirection==1) {
-    requestedInverseChains=percent;
-    inverseChainsEnabled=supported && confirmedChainPercent>0;
-    chainsEnabled=false;
-    chainsInitialized=inverseChainsInitialized=true;
-  }
-}
-
-void applySetting(uint16_t id, const uint8_t* value, int width) {
-  if(id==0x4fb0 && width==1) updateConfirmedMode(value[0]);
-  else if(id==0x3e86 && width==2) {
-    int pounds=uint16_t(value[0])|(uint16_t(value[1])<<8);
-    if(pounds>=5 && pounds<=230) {
-      confirmedWeight=pounds; weightConfirmedAt=millis(); target=pounds; targetInitialized=true;
-      Serial.printf("DEVICE CONFIRMED base_weight=%d lb; display synchronized\n",pounds);
-    }
-  } else if(id==0x3e88 && width==2) {
-    confirmedEccentric=int16_t(uint16_t(value[0])|(uint16_t(value[1])<<8));
-    if(!eccentricInitialized) { requestedEccentric=confirmedEccentric; eccentricEnabled=confirmedEccentric!=0; eccentricInitialized=true; }
-  } else if(id==0x53b0 && width==1) confirmedChainDirection=value[0];
-  else if(id==0x556f && width==1) confirmedChainVariant=value[0];
-  else if(id==0x54da && width==4) {
-    uint32_t raw=uint32_t(value[0])|(uint32_t(value[1])<<8)|(uint32_t(value[2])<<16)|(uint32_t(value[3])<<24);
-    if(raw<=10000) confirmedChainPercent=int(raw);
-  }
-}
-
-bool decodeSettings(const uint8_t* data, size_t n, size_t at, uint16_t count) {
-  const size_t payloadEnd=n-2;
-  for(uint16_t i=0;i<count;i++) {
-    if(at+2>payloadEnd) return false;
-    const uint16_t id=uint16_t(data[at]) | uint16_t(data[at+1])<<8; at+=2;
-    const int width=settingWidth(id);
-    // Unknown widths cannot be skipped safely; reject this frame rather than
-    // misaligning the remainder and fabricating a confirmed state.
-    if(width==0 || at+size_t(width)>payloadEnd) return false;
-    applySetting(id,data+at,width);
-    at+=width;
-  }
-  if(at!=payloadEnd) return false;
-  reconcileChainUi();
-  return true;
-}
-
 void decodeMode(const uint8_t* data, size_t n) {
   // Voltra's legacy 0x55/0x2E settings cascade has the same parameter
   // layout as cmd 0x10, but no inner command byte. It is used for settings
   // changed from the Voltra itself, including inverse chains.
-  if (!validFrame(data,n)) return;
-  // Read response: status at 11, uint16 LE count at 12-13, fields at 14.
-  if(n>16 && data[4]==0x10 && data[5]==0xaa && data[10]==0x0f)
-    decodeSettings(data,n,14,uint16_t(data[12]) | uint16_t(data[13])<<8);
-  // Settings notification: uint16 LE count at 11-12, fields at 13.
-  if(n>15 && data[10]==0x10)
-    decodeSettings(data,n,13,uint16_t(data[11]) | uint16_t(data[12])<<8);
+  const bool legacySettingsUpdate=n==46 && data[0]==0x55 && data[1]==0x2e;
+  if (!legacySettingsUpdate && !validFrame(data,n)) return;
+  // Response to our one-register cmd 0x0F read. The device-to-app envelope
+  // reverses 0xAA/0x10 and returns <count=1><reserved><id LE><uint8 value>.
+  if(n==19 && data[4]==0x10 && data[5]==0xaa && data[10]==0x0f &&
+     data[12]==1 && data[13]==0 && data[14]==0xb0 && data[15]==0x4f)
+    updateConfirmedMode(data[16]);
+  // General cmd 0x0F register-read response. Values follow count/reserved as
+  // <id LE><value>, with widths defined by the pinned protocol catalog.
+  if(n>18 && data[4]==0x10 && data[5]==0xaa && data[10]==0x0f) {
+    uint8_t count=data[12]; size_t at=14;
+    for(uint8_t i=0;i<count && at+2<n-2;i++) {
+      uint16_t id=uint16_t(data[at]) | uint16_t(data[at+1])<<8; at+=2;
+      size_t width=(id==0x3e86 || id==0x3e87 || id==0x3e88 || id==0x3e89)?2:1;
+      if(at+width>n-2) return;
+      if(id==0x4fb0) updateConfirmedMode(data[at]);
+      else if(id==0x3e86) {
+        int value=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        if(value>=5 && value<=230) {
+          confirmedWeight=value; weightConfirmedAt=millis();
+          // A read response represents the current device value; use it as
+          // the controller's target instead of retaining an old local value.
+          target=value; targetInitialized=true;
+          Serial.printf("DEVICE CONFIRMED base_weight=%d lb; display synchronized\n",value);
+        }
+      }
+      else if(id==0x3e87) {
+        confirmedChains=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        if(!chainsInitialized) { requestedChains=confirmedChains; chainsEnabled=confirmedChains!=0; chainsInitialized=true; }
+      }
+      else if(id==0x3e88) {
+        confirmedEccentric=int16_t(uint16_t(data[at])|(uint16_t(data[at+1])<<8));
+        if(!eccentricInitialized) { requestedEccentric=confirmedEccentric; eccentricEnabled=confirmedEccentric!=0; eccentricInitialized=true; }
+      }
+      else if(id==0x53b0) {
+        confirmedInverseChains=data[at];
+        if(!inverseChainsInitialized) { requestedInverseChains=confirmedInverseChains; inverseChainsEnabled=confirmedInverseChains!=0; inverseChainsInitialized=true; }
+      }
+      at+=width;
+    }
+  }
+  // cmd 0x10/settings update: count,reserved,<param-id LE><value>.
+  if (n > 15 && (data[10] == 0x10 || legacySettingsUpdate)) {
+    uint8_t count=data[11]; size_t at=13;
+    for(uint8_t i=0;i<count && at+2<n-2;i++) {
+      uint16_t id=uint16_t(data[at]) | uint16_t(data[at+1])<<8; at+=2;
+      size_t width=(id==0x3e86 || id==0x3e87 || id==0x3e88 || id==0x3e89)?2:1;
+      if(at+width>n-2) return;
+      if(id==0x4fb0) updateConfirmedMode(data[at]);
+      else if(id==0x3e86) {
+        int value=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        if(value>=5 && value<=230) {
+          confirmedWeight=value; weightConfirmedAt=millis();
+          // Voltra publishes this when its own controls change the setting.
+          // Redraw the center value from the newly confirmed device state.
+          target=value; targetInitialized=true;
+          Serial.printf("DEVICE CONFIRMED base_weight=%d lb; display synchronized\n",value);
+        }
+      }
+      else if(id==0x3e87) confirmedChains=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+      else if(id==0x3e88) confirmedEccentric=int16_t(uint16_t(data[at])|(uint16_t(data[at+1])<<8));
+      else if(id==0x53b0) confirmedInverseChains=data[at];
+      at+=width;
+    }
+  }
   // Vendor state dump: payload byte zero is the active training mode.
   if(n>=52 && data[10]==0xaa && data[11]==0x80 && data[12]==0x25)
     updateConfirmedMode(data[13]);
@@ -237,30 +229,6 @@ bool sendModifier(uint16_t wireId,int value,int minimum,int maximum) {
   p[3]=crc8(p,3); uint16_t c=crc16(p,sizeof(p)-2); p[17]=c&255; p[18]=c>>8;
   return writePacket(p,sizeof(p));
 }
-uint16_t nextSettingSequence() {
-  static uint16_t sequence=0x3000;
-  return sequence++;
-}
-bool writeUnsignedSetting(uint16_t id, uint32_t value, uint8_t width, uint16_t sequence) {
-  if(width<1 || width>4 || (width<4 && value >= (uint32_t(1)<<(width*8)))) return false;
-  const size_t n=17+width;
-  uint8_t p[21] = {0x55,0,4,0,0xaa,0x10,uint8_t(sequence),uint8_t(sequence>>8),
-                   0x20,0,0x11,1,0,uint8_t(id),uint8_t(id>>8),0,0,0,0,0,0};
-  p[1]=uint8_t(n);
-  for(uint8_t i=0;i<width;i++) p[15+i]=uint8_t(value>>(8*i));
-  p[3]=crc8(p,3); const uint16_t c=crc16(p,n-2); p[n-2]=c&255; p[n-1]=c>>8;
-  return writePacket(p,n);
-}
-bool sendChainSettings(bool inverse, bool enabled, int percent) {
-  if(percent<0 || percent>100) return false;
-  // The direction survives when the shared amount is zero. Clear first so a
-  // failed direction/amount write cannot leave the previous curve active.
-  if(!writeUnsignedSetting(0x54da,0,4,nextSettingSequence())) return false;
-  if(!enabled) return true;
-  if(!writeUnsignedSetting(0x556f,0,1,nextSettingSequence())) return false;
-  if(!writeUnsignedSetting(0x53b0,inverse?1:0,1,nextSettingSequence())) return false;
-  return writeUnsignedSetting(0x54da,uint32_t(percent)*100,4,nextSettingSequence());
-}
 void queryTrainingMode(bool includeWeight=false) {
   uint8_t p[] = {0x55,19,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,2,0,
                  0xb0,0x4f,0x86,0x3e,0,0};
@@ -274,13 +242,10 @@ void queryTrainingMode(bool includeWeight=false) {
   if(!writePacket(p,length)) pendingAction=PendingAction::None;
 }
 void queryCurrentSettings() {
-  // Base/mode and the complete shared chain state. The corresponding decoder
-  // knows every requested width, so it can reject malformed replies safely.
-  uint8_t p[] = {0x55,29,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,7,0,
-                 0xb0,0x4f,0x86,0x3e,0x88,0x3e,0x6f,0x55,0xb0,0x53,
-                 0xda,0x54,0x87,0x3e,0,0};
+  uint8_t p[] = {0x55,25,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,5,0,
+                 0xb0,0x4f,0x86,0x3e,0x87,0x3e,0x88,0x3e,0xb0,0x53,0,0};
   p[3]=crc8(p,3); uint16_t c=crc16(p,sizeof(p)-2);
-  p[27]=c&255; p[28]=c>>8;
+  p[23]=c&255; p[24]=c>>8;
   modeQueryAt=millis();
   lastSettingsPollAt=modeQueryAt;
   writePacket(p,sizeof(p));
@@ -289,8 +254,7 @@ void cleanup() {
   ready = enabled = polling = false; activationTriggered=false;
   dropArmed=false; lastRepAt=lastReturnAt=0;
   confirmedMode=ConfirmedMode::Unknown; modeConfirmedAt=0;
-  confirmedWeight=confirmedEccentric=-32768;
-  confirmedChainPercent=-32768; confirmedChainDirection=confirmedChainVariant=-1;
+  confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=-32768;
   weightConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false;
   eccentricInitialized=chainsInitialized=inverseChainsInitialized=false;
   pendingAction=PendingAction::None; loadStep=LoadStep::Idle;
@@ -340,10 +304,9 @@ void command(String s) {
     Serial.printf("UI ready=%d PSRAM=%u\n",uiReady(),ESP.getPsramSize());
     Serial.printf("BLE connected=%d handshake_sent=%d writes_enabled=%d requested_lb=%d device_state=unknown\n",
                   client && client->isConnected(), ready, enabled, target);
-    Serial.printf("requested modifiers: eccentric=%d lb chains=%d%% inverse_chains=%d%%; confirmed weight/ecc=%d/%d chain=%d/100%% direction=%d variant=%d\n",
+    Serial.printf("requested modifiers: eccentric=%d chains=%d inverse_chains=%d lb; confirmed=%d/%d/%d/%d\n",
                   requestedEccentric,requestedChains,requestedInverseChains,
-                  int(confirmedWeight),int(confirmedEccentric),int(confirmedChainPercent),
-                  int(confirmedChainDirection),int(confirmedChainVariant));
+                  int(confirmedWeight),int(confirmedEccentric),int(confirmedChains),int(confirmedInverseChains));
     Serial.printf("modifier enabled: eccentric=%d chains=%d inverse_chains=%d\n",
                   eccentricEnabled,chainsEnabled,inverseChainsEnabled);
     Serial.printf("drop_sets enabled=%d amount=%d lb hold=%ds armed=%d\n",
@@ -428,20 +391,19 @@ void loop() {
   if(toggled!=UiSelection::Weight) {
     lastActivityAt=millis();
     if(toggled==UiSelection::Eccentric) eccentricEnabled=!eccentricEnabled;
-    else if(toggled==UiSelection::Chains) {
-      chainsEnabled=!chainsEnabled;
-      if(chainsEnabled) { inverseChainsEnabled=false; if(requestedChains==0) requestedChains=5; }
-    }
+    else if(toggled==UiSelection::Chains) chainsEnabled=!chainsEnabled;
     else {
       inverseChainsEnabled=!inverseChainsEnabled;
-      if(inverseChainsEnabled) { chainsEnabled=false; if(requestedInverseChains==0) requestedInverseChains=5; }
+      // A newly enabled inverse-chain setting cannot use zero: zero is the
+      // Voltra's explicit disabled value. Subsequent toggles retain the value.
+      if(inverseChainsEnabled && requestedInverseChains==0) requestedInverseChains=5;
     }
     const char* name=toggled==UiSelection::Eccentric?"eccentric":
       toggled==UiSelection::Chains?"chains":"inverse chains";
     bool on=toggled==UiSelection::Eccentric?eccentricEnabled:
       toggled==UiSelection::Chains?chainsEnabled:inverseChainsEnabled;
     Serial.printf("Touch toggled %s %s; saved value retained\n",name,on?"ON":"OFF");
-    if(loadStep!=LoadStep::Idle || polling || activationTriggered) {
+    if(loadStep!=LoadStep::Idle || polling) {
       Serial.println("Modifier toggle local only: guided load in progress");
     } else if(ready && client && client->isConnected()) {
       pendingAction=toggled==UiSelection::Eccentric?PendingAction::KnobEccentric:
@@ -468,9 +430,9 @@ void loop() {
     else if(selection==UiSelection::Eccentric) requestedEccentric=constrain(requestedEccentric+knobDelta,-195,195);
     else if(selection==UiSelection::Chains) requestedChains=constrain(requestedChains+knobDelta,0,100);
     else requestedInverseChains=constrain(requestedInverseChains+knobDelta,0,100);
-    Serial.printf("Knob requested: weight=%d delta=%d eccentric=%d lb chains=%d%% inverse=%d%%; checking device mode\n",
+    Serial.printf("Knob requested: weight=%d delta=%d eccentric=%d chains=%d inverse=%d lb; checking device mode\n",
                   target,pendingWeightDelta,requestedEccentric,requestedChains,requestedInverseChains);
-    if((loadStep!=LoadStep::Idle)||polling||activationTriggered) {
+    if((loadStep!=LoadStep::Idle)||polling) {
       Serial.println("Knob change local only: guided load in progress");
     } else if(selection!=UiSelection::Weight &&
               !((selection==UiSelection::Eccentric && eccentricEnabled) ||
@@ -551,18 +513,14 @@ void loop() {
       } else {
         bool sent=false; const char* setting="weight"; int value=target;
         if(action==PendingAction::KnobEccentric) { setting="eccentric"; value=eccentricEnabled?requestedEccentric:0; sent=sendModifier(0x883e,value,-195,195); }
-        else if(action==PendingAction::KnobChains) { setting="chains"; value=chainsEnabled?requestedChains:0; sent=sendChainSettings(false,chainsEnabled,requestedChains); }
-        else if(action==PendingAction::KnobInverseChains) { setting="inverse chains"; value=inverseChainsEnabled?requestedInverseChains:0; sent=sendChainSettings(true,inverseChainsEnabled,requestedInverseChains); }
+        else if(action==PendingAction::KnobChains) { setting="chains"; value=chainsEnabled?requestedChains:0; sent=sendModifier(0x873e,value,0,100); }
+        else if(action==PendingAction::KnobInverseChains) { setting="inverse chains"; value=inverseChainsEnabled?requestedInverseChains:0; sent=sendModifier(0xb053,value,0,100); }
         else {
           target=constrain(int(confirmedWeight)+pendingWeightDelta,5,230);
           pendingWeightDelta=0; targetInitialized=true; value=target;
           sent=sendWeight(target);
         }
-        if(sent) {
-          const bool isChain=action==PendingAction::KnobChains || action==PendingAction::KnobInverseChains;
-          Serial.printf("Requested %s %d%s written: awaiting combined device confirmation\n",setting,value,isChain?"%":" lb");
-          if(isChain) queryCurrentSettings();
-        }
+        if(sent) Serial.printf("Requested %s %d lb written: awaiting device confirmation\n",setting,value);
       }
     } else {
       Serial.printf("Action not sent: confirmed mode=%u is not Weight Training\n",unsigned(confirmedMode));
@@ -596,16 +554,14 @@ void loop() {
     queryCurrentSettings();
   }
   uiTick(target,requestedEccentric,requestedChains,requestedInverseChains,
-         int(confirmedWeight),int(confirmedEccentric),int(confirmedChainPercent<0?-32768:(confirmedChainPercent+50)/100),
-         int(confirmedChainPercent<0?-32768:(confirmedChainPercent+50)/100),
+         int(confirmedWeight),int(confirmedEccentric),int(confirmedChains),int(confirmedInverseChains),
          eccentricEnabled,chainsEnabled,inverseChainsEnabled,
          activationTriggered,dropEnabled,dropAmount,dropHoldSeconds,dropArmed,autoSleepEnabled,
          client && client->isConnected());
   if (ready && (!client || !client->isConnected())) {
     ready=enabled=polling=false; activationTriggered=false; dropArmed=false; writer=nullptr;
     confirmedMode=ConfirmedMode::Unknown; modeConfirmedAt=0;
-    confirmedWeight=confirmedEccentric=-32768;
-    confirmedChainPercent=-32768; confirmedChainDirection=confirmedChainVariant=-1;
+    confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=-32768;
     weightConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false;
     pendingAction=PendingAction::None; loadStep=LoadStep::Idle;
     Serial.println("Disconnected. Motor state unknown. No automatic replay or reconnect.");

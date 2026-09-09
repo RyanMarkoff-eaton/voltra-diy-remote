@@ -46,17 +46,6 @@ def build_modifier(param_be, value, minimum):
     packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
     return bytes(packet)
 
-def build_unsigned_setting(param, value, width, sequence):
-    assert 1 <= width <= 4
-    assert value >= 0 and (width == 4 or value < (1 << (width * 8)))
-    packet = bytearray([0x55, 17 + width, 4, 0, 0xaa, 0x10,
-                        sequence & 255, (sequence >> 8) & 255, 0x20, 0,
-                        0x11, 1, 0, param & 255, param >> 8] +
-                       [(value >> (8 * index)) & 255 for index in range(width)] + [0, 0])
-    packet[3] = crc(packet[:3], 0x77, 0x8c)
-    packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
-    return bytes(packet)
-
 for lbs in range(5, 201):
     assert build_weight(lbs) == bytes(int(x, 16) for x in arrays[lbs + 2].split(',')), lbs
 for lbs in range(201, 231):
@@ -68,16 +57,9 @@ generated = root.parent / 'upstream-sdk/src/voltra/protocol/data/protocol-data.g
 if generated.exists():
     encoded = re.search(r"const _e = '([^']+)'", generated.read_text()).group(1)
     commands = json.loads(base64.b64decode(encoded))['commands']
-    cases = [('eccentric', 0x883e, -195, 195)]
+    cases = [('chains', 0x873e, 0, 100), ('eccentric', 0x883e, -195, 195),
+             ('inverseChains', 0xb053, 0, 100)]
     for name, param, low, high in cases:
         for value in range(low, high + 1):
             assert build_modifier(param, value, low).hex() == commands[name][str(value)], (name, value)
-
-# Chain and inverse-chain setters use the typed native shared-chain model from
-# the reviewed protocol: variant uint8, direction uint8, amount uint32 LE.
-assert build_unsigned_setting(0x556f, 0, 1, 0x2001).hex() == '551204c7aa10012020001101006f5500ab15'
-assert build_unsigned_setting(0x53b0, 1, 1, 0x2002).hex() == '551204c7aa1002202000110100b0530153e1'
-assert build_unsigned_setting(0x54da, 3000, 4, 0x2003).hex() == '551504a9aa1003202000110100da54b80b000052fd'
-assert build_unsigned_setting(0x54da, 0, 4, 0x2004).hex() == '551504a9aa1004202000110100da5400000000f348'
-assert build_unsigned_setting(0x53b0, 0, 1, 0x2005).hex() == '551204c7aa1005202000110100b053002f34'
-print('PASS: 203 SDK packets; weight builder 5..230; typed chain/inverse-chain fixtures; pinned eccentric packets.')
+print('PASS: 203 SDK packets; weight builder 5..230; all 593 pinned modifier packets.')
