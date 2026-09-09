@@ -59,9 +59,9 @@ flash the `elecrow21_ui` environment until you have confirmed this board.
 - Touch activation, long-hold experimental guided load, and a dedicated STOP
   touch target.
 - Eccentric, Chains, and Inverse Chains controls with colored rings and saved
-  values. **Inverse Chains is currently known not to apply reliably on the
-  Voltra**; it is refreshed by a read-only settings query while idle and should
-  be treated as unavailable until it is validated on your firmware.
+  values. Chains and Inverse Chains share Voltra's native percentage setting:
+  selecting either one clears the shared amount, selects its direction, then
+  applies the selected percentage. Only one chain direction can be enabled.
 - Drop-set screen: configurable drop amount and delay after the last detected
   cable return.
 - Optional 15-minute auto sleep. It only enters deep sleep while the controller
@@ -116,7 +116,8 @@ because it boots or reconnects.
   send STOP/unload.
 - **Hold weight for one second:** experimental guided load.
 - **Tap a modifier row:** enable/disable it while preserving the selected value.
-  Rotate while selected to edit its value.
+  Rotate while selected to edit its value. Chain and Inverse Chain values are
+  percentages; they are two directions of one shared setting.
 - **Swipe right:** open Drop Sets. Tap `DROP` or `HOLD`, then rotate to change
   that value. Tap Auto Drop or Auto Sleep to toggle each option.
 - **Tap STOP:** sends Voltra's STOP/unload packet.
@@ -139,6 +140,11 @@ python tools/check_upstream.py path\to\voltra-node-sdk
 The packet checks validate the embedded protocol data and generated setting
 packets. They do not validate motor behavior on your Voltra. See
 [VALIDATION.md](VALIDATION.md) for the current hardware-validation limits.
+
+The typed Chain/Inverse Chain protocol path was added after initial hardware
+testing. The remote has been verified to reconnect and read the inactive shared
+chain state without writing settings. Confirm a low percentage on your own
+Voltra and compare its screen before relying on either direction in training.
 
 ## Attribution
 
