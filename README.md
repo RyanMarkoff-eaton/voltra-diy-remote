@@ -59,9 +59,9 @@ flash the `elecrow21_ui` environment until you have confirmed this board.
 - Touch activation, long-hold experimental guided load, and a dedicated STOP
   touch target.
 - Eccentric, Chains, and Inverse Chains controls with colored rings and saved
-  values. **Inverse Chains is currently known not to apply reliably on the
-  Voltra**; it is refreshed by a read-only settings query while idle and should
-  be treated as unavailable until it is validated on your firmware.
+  values. Chain and Inverse Chain are mutually exclusive. The inverse path
+  selects the device's inverse direction with a typed one-byte setting, then
+  uses the standard Chain value command.
 - Drop-set screen: configurable drop amount and delay after the last detected
   cable return.
 - Optional 15-minute auto sleep. It only enters deep sleep while the controller

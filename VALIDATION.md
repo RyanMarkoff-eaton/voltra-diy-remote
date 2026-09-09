@@ -22,9 +22,11 @@
 - Guided load and automatic drop sets have packet-level validation but require
   controlled physical validation on each Voltra firmware version.
 - A successful BLE write is not proof that Voltra changed its motor state.
-- Inverse Chains support is dependent on Voltra firmware and entitlement state.
-  The controller periodically reads the inverse-chain register because some
-  Voltra settings notifications do not publish that value.
+- Inverse Chain writes its direction selector as a typed one-byte setting and
+  then uses the standard Chain value command. This path passed packet checks
+  and was verified on the reference Voltra at a low setting. Voltra firmware
+  and account feature availability may still vary; confirm the setting on the
+  Voltra display before training.
 - Auto sleep is ESP32 deep sleep, not a physical battery disconnect. It wakes
   with RESET or restored 5 V.
 - The 201–230 lb range is a user-specific beta extension; public upstream

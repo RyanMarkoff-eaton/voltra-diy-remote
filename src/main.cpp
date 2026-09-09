@@ -229,6 +229,20 @@ bool sendModifier(uint16_t wireId,int value,int minimum,int maximum) {
   p[3]=crc8(p,3); uint16_t c=crc16(p,sizeof(p)-2); p[17]=c&255; p[18]=c>>8;
   return writePacket(p,sizeof(p));
 }
+bool sendChainDirection(bool inverse) {
+  // 0x53b0 is a uint8 direction selector. It is not a two-byte pound value.
+  const uint16_t sequence=0x2000+(inverse?1:0);
+  uint8_t p[] = {0x55,18,4,0,0xaa,0x10,uint8_t(sequence),uint8_t(sequence>>8),
+                 0x20,0,0x11,1,0,0xb0,0x53,uint8_t(inverse?1:0),0,0};
+  p[3]=crc8(p,3); const uint16_t c=crc16(p,sizeof(p)-2); p[16]=c&255; p[17]=c>>8;
+  return writePacket(p,sizeof(p));
+}
+bool sendInverseChains(int value, bool enabled) {
+  // Retain the proven chain-value command and correct only the inverse
+  // direction field. Clearing the value disables the shared chain effect.
+  if(!enabled) return sendModifier(0x873e,0,0,100);
+  return sendChainDirection(true) && sendModifier(0x873e,value,0,100);
+}
 void queryTrainingMode(bool includeWeight=false) {
   uint8_t p[] = {0x55,19,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,2,0,
                  0xb0,0x4f,0x86,0x3e,0,0};
@@ -391,9 +405,13 @@ void loop() {
   if(toggled!=UiSelection::Weight) {
     lastActivityAt=millis();
     if(toggled==UiSelection::Eccentric) eccentricEnabled=!eccentricEnabled;
-    else if(toggled==UiSelection::Chains) chainsEnabled=!chainsEnabled;
+    else if(toggled==UiSelection::Chains) {
+      chainsEnabled=!chainsEnabled;
+      if(chainsEnabled) inverseChainsEnabled=false;
+    }
     else {
       inverseChainsEnabled=!inverseChainsEnabled;
+      if(inverseChainsEnabled) chainsEnabled=false;
       // A newly enabled inverse-chain setting cannot use zero: zero is the
       // Voltra's explicit disabled value. Subsequent toggles retain the value.
       if(inverseChainsEnabled && requestedInverseChains==0) requestedInverseChains=5;
@@ -513,8 +531,11 @@ void loop() {
       } else {
         bool sent=false; const char* setting="weight"; int value=target;
         if(action==PendingAction::KnobEccentric) { setting="eccentric"; value=eccentricEnabled?requestedEccentric:0; sent=sendModifier(0x883e,value,-195,195); }
-        else if(action==PendingAction::KnobChains) { setting="chains"; value=chainsEnabled?requestedChains:0; sent=sendModifier(0x873e,value,0,100); }
-        else if(action==PendingAction::KnobInverseChains) { setting="inverse chains"; value=inverseChainsEnabled?requestedInverseChains:0; sent=sendModifier(0xb053,value,0,100); }
+        else if(action==PendingAction::KnobChains) {
+          setting="chains"; value=chainsEnabled?requestedChains:0;
+          sent=(confirmedInverseChains==1 ? sendChainDirection(false) : true) && sendModifier(0x873e,value,0,100);
+        }
+        else if(action==PendingAction::KnobInverseChains) { setting="inverse chains"; value=inverseChainsEnabled?requestedInverseChains:0; sent=sendInverseChains(value,inverseChainsEnabled); }
         else {
           target=constrain(int(confirmedWeight)+pendingWeightDelta,5,230);
           pendingWeightDelta=0; targetInitialized=true; value=target;

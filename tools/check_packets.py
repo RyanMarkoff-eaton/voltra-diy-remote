@@ -46,12 +46,22 @@ def build_modifier(param_be, value, minimum):
     packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
     return bytes(packet)
 
+def build_chain_direction(inverse):
+    sequence = 0x2000 + int(inverse)
+    packet = bytearray([0x55, 18, 4, 0, 0xaa, 0x10, sequence & 255, sequence >> 8,
+                        0x20, 0, 0x11, 1, 0, 0xb0, 0x53, int(inverse), 0, 0])
+    packet[3] = crc(packet[:3], 0x77, 0x8c)
+    packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
+    return bytes(packet)
+
 for lbs in range(5, 201):
     assert build_weight(lbs) == bytes(int(x, 16) for x in arrays[lbs + 2].split(',')), lbs
 for lbs in range(201, 231):
     packet = build_weight(lbs)
     assert packet[15:17] == lbs.to_bytes(2, 'little')
     assert crc(packet[:-2], 0x3692, 0x8408) == int.from_bytes(packet[-2:], 'little')
+assert build_chain_direction(False).hex() == '551204c7aa1000202000110100b0530094a8'
+assert build_chain_direction(True).hex() == '551204c7aa1001202000110100b053013a95'
 
 generated = root.parent / 'upstream-sdk/src/voltra/protocol/data/protocol-data.generated.ts'
 if generated.exists():
