@@ -52,16 +52,18 @@ flash the `elecrow21_ui` environment until you have confirmed this board.
 
 - Direct BLE discovery, handshake, automatic reconnect, and current-settings
   reads. Connection and reconnect never send a resistance, GO, or load command.
+  The remote reads the reported motor-control register and treats a transport
+  acknowledgment as neither Load nor Unload confirmation.
 - 5–230 lb base-weight control in 1 lb encoder detents. Values above 200 lb are
   an unverified beta extension and require a Voltra that supports them.
 - Mode-gated writes: controller changes are sent only after a fresh Voltra
   response reports Weight Training mode.
 - Touch activation, long-hold experimental guided load, and a dedicated STOP
   touch target.
-- Eccentric, Chains, and Inverse Chains controls with colored rings and saved
-  values. Chain and Inverse Chain are mutually exclusive. The inverse path
-  selects the device's inverse direction with a typed one-byte setting, then
-  uses the standard Chain value command.
+- Eccentric, Chains, and Inverse Chains controls with colored rings, saved
+  values, and explicit ON/OFF buttons. Chain and Inverse Chain are mutually
+  exclusive. Their shared pound value is stored in `3E87`; `53B0` is only the
+  one-byte direction selector.
 - Drop-set screen: configurable drop amount and delay after the last detected
   cable return.
 - Optional 15-minute auto sleep. It only enters deep sleep while the controller
@@ -96,9 +98,10 @@ to `BLE CONNECTED` when ready.
    for `BLE CONNECTED`. If it remains offline, confirm the address, that the
    Voltra is awake and nearby, and that another app is not holding its BLE
    connection.
-3. Turn the encoder to choose a requested base weight. The screen shows the
-   requested value separately from settings read back from the Voltra. Turning
-   the encoder alone does not engage resistance.
+3. Tap **LBS**, then turn the encoder to choose a requested base weight. The
+   colored filled row identifies the setting currently assigned to the dial.
+   The screen shows the requested value separately from settings read back from
+   the Voltra. Turning the encoder alone does not engage resistance.
 4. Tap the large weight number once to request the normal activation sequence.
    Tap it again, or tap **STOP**, to unload. Always confirm the actual Voltra
    response before beginning an exercise.
@@ -111,12 +114,20 @@ because it boots or reconnects.
 
 ## Controls
 
-- **Rotate main screen:** adjust base weight.
+- **Rotate main screen:** adjust base weight. Normal turns use 1 lb per
+  detent; consecutive detents within 120 ms use 5 lb, and within 45 ms use
+  10 lb. Slow down briefly to return to 1 lb adjustments.
 - **Tap weight:** activate the selected Weight Training weight; tap again to
   send STOP/unload.
 - **Hold weight for one second:** experimental guided load.
-- **Tap a modifier row:** enable/disable it while preserving the selected value.
-  Rotate while selected to edit its value.
+- **Tap LBS:** assign the dial to base weight. A blue fill identifies it as the
+  selected dial target; tap it again to clear the selection.
+- **Tap a modifier label/value:** assign the dial to that modifier. Its whole
+  row fills with the modifier's own color (orange ECC, cyan Chain, purple
+  Inverse Chain); tap it again to clear the selection.
+- **Tap a modifier's ON/OFF button:** enable/disable it while preserving its
+  saved value and clearing the dial selection. If a newly enabled modifier has
+  no saved value, it starts at 5 lb so the Voltra receives an active setting.
 - **Swipe right:** open Drop Sets. Tap `DROP` or `HOLD`, then rotate to change
   that value. Tap Auto Drop or Auto Sleep to toggle each option.
 - **Tap STOP:** sends Voltra's STOP/unload packet.

@@ -1,6 +1,6 @@
 #pragma once
 #ifdef VOLTRA_DISPLAY
-enum class UiSelection : uint8_t { Weight, Eccentric, Chains, InverseChains };
+enum class UiSelection : uint8_t { None, Weight, Eccentric, Chains, InverseChains };
 enum class UiDropEdit : uint8_t { None, Amount, Hold };
 void uiBegin();
 bool uiReady();
@@ -19,13 +19,13 @@ void uiTick(int weight, int eccentric, int chains, int inverseChains,
             int dropAmount, int dropHoldSeconds, bool dropArmed, bool autoSleepEnabled, bool connected);
 void uiPowerDown();
 #else
-enum class UiSelection : uint8_t { Weight, Eccentric, Chains, InverseChains };
+enum class UiSelection : uint8_t { None, Weight, Eccentric, Chains, InverseChains };
 enum class UiDropEdit : uint8_t { None, Amount, Hold };
 inline void uiBegin() {}
 inline bool uiReady() { return false; }
 inline int uiTakeEncoderDelta() { return 0; }
-inline UiSelection uiSelection() { return UiSelection::Weight; }
-inline UiSelection uiTakeModifierToggle() { return UiSelection::Weight; }
+inline UiSelection uiSelection() { return UiSelection::None; }
+inline UiSelection uiTakeModifierToggle() { return UiSelection::None; }
 inline bool uiTakeDropToggle() { return false; }
 inline bool uiTakeSleepToggle() { return false; }
 inline UiDropEdit uiDropEdit() { return UiDropEdit::None; }

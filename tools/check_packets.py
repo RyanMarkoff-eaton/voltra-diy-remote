@@ -54,6 +54,14 @@ def build_chain_direction(inverse):
     packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
     return bytes(packet)
 
+def build_current_settings_read():
+    packet = bytearray([0x55, 27, 4, 0, 0xaa, 0x10, 0, 0x20, 0x20, 0,
+                        0x0f, 6, 0, 0xb0, 0x4f, 0x86, 0x3e, 0x87, 0x3e,
+                        0x88, 0x3e, 0x89, 0x3e, 0xb0, 0x53, 0, 0])
+    packet[3] = crc(packet[:3], 0x77, 0x8c)
+    packet[-2:] = crc(packet[:-2], 0x3692, 0x8408).to_bytes(2, 'little')
+    return bytes(packet)
+
 for lbs in range(5, 201):
     assert build_weight(lbs) == bytes(int(x, 16) for x in arrays[lbs + 2].split(',')), lbs
 for lbs in range(201, 231):
@@ -62,6 +70,7 @@ for lbs in range(201, 231):
     assert crc(packet[:-2], 0x3692, 0x8408) == int.from_bytes(packet[-2:], 'little')
 assert build_chain_direction(False).hex() == '551204c7aa1000202000110100b0530094a8'
 assert build_chain_direction(True).hex() == '551204c7aa1001202000110100b053013a95'
+assert build_current_settings_read().hex() == '551b0475aa10002020000f0600b04f863e873e883e893eb0530a7c'
 
 generated = root.parent / 'upstream-sdk/src/voltra/protocol/data/protocol-data.generated.ts'
 if generated.exists():

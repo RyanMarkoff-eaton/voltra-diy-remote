@@ -22,7 +22,11 @@ bool autoSleepEnabled=true;
 uint32_t lastActivityAt=0;
 uint32_t lastSettingsPollAt=0;
 constexpr uint32_t kSettingsPollMs=5000;
-bool activationTriggered=false;
+// A requested activation and the Voltra's reported motor state are separate.
+// Never infer that a successful BLE write engaged or released resistance.
+bool activationRequested=false;
+bool confirmedLoaded=false;
+bool motorStateKnown=false;
 bool dropEnabled=false, dropArmed=false;
 int dropAmount=5, dropHoldSeconds=2;
 volatile uint32_t lastRepAt=0, lastReturnAt=0;
@@ -34,9 +38,14 @@ bool eccentricEnabled=false, chainsEnabled=false, inverseChainsEnabled=false;
 bool eccentricInitialized=false, chainsInitialized=false, inverseChainsInitialized=false;
 volatile int confirmedWeight=-32768, confirmedEccentric=-32768;
 volatile int confirmedChains=-32768, confirmedInverseChains=-32768;
+volatile int confirmedMotorState=-32768;
 volatile uint32_t weightConfirmedAt=0;
+volatile uint32_t motorConfirmedAt=0;
 int pendingWeightDelta=0;
 bool targetInitialized=false;
+uint32_t lastWeightDetentAt=0;
+constexpr uint32_t kWeightFastTurnMs=120;
+constexpr uint32_t kWeightVeryFastTurnMs=45;
 uint32_t pollStart = 0, lastPoll = 0;
 String line;
 enum class ConfirmedMode : uint8_t { Unknown=255, Idle=0, WeightTraining=1,
@@ -52,9 +61,23 @@ LoadStep loadStep = LoadStep::Idle;
 uint32_t loadStepAt = 0;
 uint8_t crc8(const uint8_t* data, size_t n);
 uint16_t crc16(const uint8_t* data, size_t n);
+void processReceivedFrame(const uint8_t* data, size_t n);
+
+int acceleratedWeightDelta(int detents) {
+  const uint32_t now=millis();
+  const uint32_t elapsed=lastWeightDetentAt ? now-lastWeightDetentAt : UINT32_MAX;
+  lastWeightDetentAt=now;
+  // A deliberate turn remains 1 lb/detent. Consecutive detents speed up to
+  // 5 lb, then 10 lb, without affecting the precision of modifier controls.
+  const int step=elapsed<=kWeightVeryFastTurnMs ? 10 :
+                 elapsed<=kWeightFastTurnMs ? 5 : 1;
+  return detents*step;
+}
 
 bool validFrame(const uint8_t* data, size_t n) {
-  if (n < 5 || data[0] != 0x55 || data[1] != n) return false;
+  if (n < 5 || data[0] != 0x55) return false;
+  const size_t expected=data[2]==0x09 ? size_t(0x100+data[1]) : size_t(data[1]);
+  if(expected!=n) return false;
   if (crc8(data,3) != data[3]) return false;
   return crc16(data,n-2) == (uint16_t(data[n-1])<<8 | data[n-2]);
 }
@@ -84,8 +107,8 @@ void decodeMode(const uint8_t* data, size_t n) {
   // General cmd 0x0F register-read response. Values follow count/reserved as
   // <id LE><value>, with widths defined by the pinned protocol catalog.
   if(n>18 && data[4]==0x10 && data[5]==0xaa && data[10]==0x0f) {
-    uint8_t count=data[12]; size_t at=14;
-    for(uint8_t i=0;i<count && at+2<n-2;i++) {
+    uint16_t count=uint16_t(data[12])|(uint16_t(data[13])<<8); size_t at=14;
+    for(uint16_t i=0;i<count && at+2<n-2;i++) {
       uint16_t id=uint16_t(data[at]) | uint16_t(data[at+1])<<8; at+=2;
       size_t width=(id==0x3e86 || id==0x3e87 || id==0x3e88 || id==0x3e89)?2:1;
       if(at+width>n-2) return;
@@ -108,17 +131,36 @@ void decodeMode(const uint8_t* data, size_t n) {
         confirmedEccentric=int16_t(uint16_t(data[at])|(uint16_t(data[at+1])<<8));
         if(!eccentricInitialized) { requestedEccentric=confirmedEccentric; eccentricEnabled=confirmedEccentric!=0; eccentricInitialized=true; }
       }
+      else if(id==0x3e89) {
+        confirmedMotorState=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        motorConfirmedAt=millis(); motorStateKnown=true;
+        // The tested single-device strength flow reports 0 unloaded and 1
+        // loaded. Do not treat a request value (4 or 5) as confirmation.
+        if(confirmedMotorState==0) confirmedLoaded=false;
+        else if(confirmedMotorState==1) confirmedLoaded=true;
+        Serial.printf("DEVICE CONFIRMED motor_state=%d loaded=%d\n",
+                      int(confirmedMotorState),confirmedLoaded);
+      }
       else if(id==0x53b0) {
         confirmedInverseChains=data[at];
-        if(!inverseChainsInitialized) { requestedInverseChains=confirmedInverseChains; inverseChainsEnabled=confirmedInverseChains!=0; inverseChainsInitialized=true; }
+        // 0x53B0 is a profile selector (0=Chains, 1=Inverse), not a pound
+        // value. The shared amount lives in 0x3E87.
+        if(!inverseChainsInitialized) {
+          inverseChainsEnabled=confirmedInverseChains==1 && confirmedChains>0;
+          inverseChainsInitialized=true;
+        }
+        if(chainsInitialized && confirmedInverseChains==1) {
+          requestedInverseChains=confirmedChains; inverseChainsEnabled=confirmedChains!=0;
+          chainsEnabled=false; inverseChainsInitialized=true;
+        }
       }
       at+=width;
     }
   }
   // cmd 0x10/settings update: count,reserved,<param-id LE><value>.
   if (n > 15 && (data[10] == 0x10 || legacySettingsUpdate)) {
-    uint8_t count=data[11]; size_t at=13;
-    for(uint8_t i=0;i<count && at+2<n-2;i++) {
+    uint16_t count=uint16_t(data[11])|(uint16_t(data[12])<<8); size_t at=13;
+    for(uint16_t i=0;i<count && at+2<n-2;i++) {
       uint16_t id=uint16_t(data[at]) | uint16_t(data[at+1])<<8; at+=2;
       size_t width=(id==0x3e86 || id==0x3e87 || id==0x3e88 || id==0x3e89)?2:1;
       if(at+width>n-2) return;
@@ -133,8 +175,23 @@ void decodeMode(const uint8_t* data, size_t n) {
           Serial.printf("DEVICE CONFIRMED base_weight=%d lb; display synchronized\n",value);
         }
       }
-      else if(id==0x3e87) confirmedChains=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+      else if(id==0x3e87) {
+        confirmedChains=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        if(!chainsInitialized && confirmedInverseChains!=1) {
+          requestedChains=confirmedChains; chainsEnabled=confirmedChains!=0; chainsInitialized=true;
+        }
+        if(!inverseChainsInitialized && confirmedInverseChains==1) {
+          requestedInverseChains=confirmedChains;
+          inverseChainsEnabled=confirmedChains!=0; inverseChainsInitialized=true;
+        }
+      }
       else if(id==0x3e88) confirmedEccentric=int16_t(uint16_t(data[at])|(uint16_t(data[at+1])<<8));
+      else if(id==0x3e89) {
+        confirmedMotorState=uint16_t(data[at])|(uint16_t(data[at+1])<<8);
+        motorConfirmedAt=millis(); motorStateKnown=true;
+        if(confirmedMotorState==0) confirmedLoaded=false;
+        else if(confirmedMotorState==1) confirmedLoaded=true;
+      }
       else if(id==0x53b0) confirmedInverseChains=data[at];
       at+=width;
     }
@@ -152,7 +209,7 @@ void decodeDropSetTelemetry(const uint8_t* data, size_t n) {
   lastRepAt=now;
   if(data[13]==2) {
     lastReturnAt=now;
-    dropArmed=dropEnabled && activationTriggered;
+    dropArmed=dropEnabled && activationRequested;
     Serial.printf("DROP SET: return detected; %ds hold armed\n",dropHoldSeconds);
   } else if(dropArmed) {
     dropArmed=false;
@@ -161,7 +218,7 @@ void decodeDropSetTelemetry(const uint8_t* data, size_t n) {
   }
 }
 
-void received(NimBLERemoteCharacteristic*, uint8_t* data, size_t n, bool) {
+void processReceivedFrame(const uint8_t* data, size_t n) {
   // Read replies (cmd 0x0F) are controller-initiated polling and must not
   // keep the remote awake. Published settings/state events are Voltra activity.
   if(validFrame(data,n) && (data[1]==0x2e || data[10]==0x10 ||
@@ -171,6 +228,24 @@ void received(NimBLERemoteCharacteristic*, uint8_t* data, size_t n, bool) {
   Serial.print("RX ");
   for (size_t i = 0; i < n; ++i) Serial.printf("%02x", data[i]);
   Serial.println();
+}
+void received(NimBLERemoteCharacteristic*, uint8_t* data, size_t n, bool) {
+  // Notifications are a byte stream in practice: a frame may be fragmented or
+  // several frames can arrive together. Only dispatch complete short frames.
+  static uint8_t buffer[512]; static size_t used=0;
+  if(n>sizeof(buffer)-used) used=0;
+  memcpy(buffer+used,data,n); used+=n;
+  while(used) {
+    size_t start=0; while(start<used && buffer[start]!=0x55) ++start;
+    if(start) { memmove(buffer,buffer+start,used-start); used-=start; }
+    if(used<3) return;
+    const size_t frameLength=buffer[2]==0x09 ? size_t(0x100+buffer[1]) : size_t(buffer[1]);
+    if(frameLength<5 || frameLength>sizeof(buffer)) { memmove(buffer,buffer+1,--used); continue; }
+    if(used<frameLength) return;
+    if(validFrame(buffer,frameLength)) processReceivedFrame(buffer,frameLength);
+    else Serial.println("RX discarded: invalid frame");
+    memmove(buffer,buffer+frameLength,used-frameLength); used-=frameLength;
+  }
 }
 
 bool writePacket(const uint8_t* data, size_t n) {
@@ -182,7 +257,7 @@ bool writePacket(const uint8_t* data, size_t n) {
   }
   bool ok = writer->writeValue(data, n, true);
   if (!ok) {
-    enabled = false; activationTriggered=false;
+    enabled = false; activationRequested=false; confirmedLoaded=false; motorStateKnown=false;
     polling = false;
     Serial.println("ERROR: write failed; command outcome unknown; writes disabled");
   }
@@ -240,7 +315,7 @@ bool sendChainDirection(bool inverse) {
 bool sendInverseChains(int value, bool enabled) {
   // Retain the proven chain-value command and correct only the inverse
   // direction field. Clearing the value disables the shared chain effect.
-  if(!enabled) return sendModifier(0x873e,0,0,100);
+  if(!enabled) return sendChainDirection(false) && sendModifier(0x873e,0,0,100);
   return sendChainDirection(true) && sendModifier(0x873e,value,0,100);
 }
 void queryTrainingMode(bool includeWeight=false) {
@@ -256,20 +331,21 @@ void queryTrainingMode(bool includeWeight=false) {
   if(!writePacket(p,length)) pendingAction=PendingAction::None;
 }
 void queryCurrentSettings() {
-  uint8_t p[] = {0x55,25,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,5,0,
-                 0xb0,0x4f,0x86,0x3e,0x87,0x3e,0x88,0x3e,0xb0,0x53,0,0};
+  uint8_t p[] = {0x55,27,4,0,0xaa,0x10,0,0x20,0x20,0,0x0f,6,0,
+                 0xb0,0x4f,0x86,0x3e,0x87,0x3e,0x88,0x3e,0x89,0x3e,
+                 0xb0,0x53,0,0};
   p[3]=crc8(p,3); uint16_t c=crc16(p,sizeof(p)-2);
-  p[23]=c&255; p[24]=c>>8;
+  p[25]=c&255; p[26]=c>>8;
   modeQueryAt=millis();
   lastSettingsPollAt=modeQueryAt;
   writePacket(p,sizeof(p));
 }
 void cleanup() {
-  ready = enabled = polling = false; activationTriggered=false;
+  ready = enabled = polling = false; activationRequested=false; confirmedLoaded=false; motorStateKnown=false;
   dropArmed=false; lastRepAt=lastReturnAt=0;
   confirmedMode=ConfirmedMode::Unknown; modeConfirmedAt=0;
-  confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=-32768;
-  weightConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false;
+  confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=confirmedMotorState=-32768;
+  weightConfirmedAt=motorConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false; lastWeightDetentAt=0;
   eccentricInitialized=chainsInitialized=inverseChainsInitialized=false;
   pendingAction=PendingAction::None; loadStep=LoadStep::Idle;
   writer = nullptr;
@@ -316,8 +392,9 @@ void command(String s) {
   s.trim();
   if (s=="status") {
     Serial.printf("UI ready=%d PSRAM=%u\n",uiReady(),ESP.getPsramSize());
-    Serial.printf("BLE connected=%d handshake_sent=%d writes_enabled=%d requested_lb=%d device_state=unknown\n",
-                  client && client->isConnected(), ready, enabled, target);
+    Serial.printf("BLE connected=%d handshake_sent=%d writes_enabled=%d requested_lb=%d motor=%d known=%d loaded=%d\n",
+                  client && client->isConnected(), ready, enabled, target,
+                  int(confirmedMotorState),motorStateKnown,confirmedLoaded);
     Serial.printf("requested modifiers: eccentric=%d chains=%d inverse_chains=%d lb; confirmed=%d/%d/%d/%d\n",
                   requestedEccentric,requestedChains,requestedInverseChains,
                   int(confirmedWeight),int(confirmedEccentric),int(confirmedChains),int(confirmedInverseChains));
@@ -342,8 +419,9 @@ void command(String s) {
     target=v; targetInitialized=true; Serial.printf("Requested target: %d lb (not sent)\n",target); return;
   }
   if (s=="stop") {
-    polling=false; enabled=false; activationTriggered=false; dropArmed=false;
-    Serial.println(send(protocol::stop)?"STOP written; verify release on device":"STOP failed; use Voltra controls");
+    polling=false; enabled=false; activationRequested=false; dropArmed=false; motorStateKnown=false;
+    bool stopped=send(protocol::stop); if(stopped) queryCurrentSettings();
+    Serial.println(stopped?"STOP written; awaiting unloaded device report":"STOP failed; use Voltra controls");
     return;
   }
   if (!ready || !client || !client->isConnected()) { Serial.println("Connect first"); return; }
@@ -360,8 +438,9 @@ void command(String s) {
     delay(500); // bench settling delay, must be validated on the real device
     if (!sendWeight(target)) return;
     if (!send(protocol::trigger)) return;
-    activationTriggered=true;
+    activationRequested=true;
     polling=true; pollStart=lastPoll=millis();
+    queryCurrentSettings();
     Serial.println("Guided-load trigger written. RX contains raw status; activation unconfirmed.");
   } else Serial.println("Commands: scan, connect MAC, target N, enable, weight, load, stop, disconnect");
 }
@@ -402,12 +481,19 @@ void loop() {
     Serial.printf("AUTO SLEEP %s: 15 minutes idle\n",autoSleepEnabled?"ON":"OFF");
   }
   UiSelection toggled=uiTakeModifierToggle();
-  if(toggled!=UiSelection::Weight) {
+  if(toggled!=UiSelection::None) {
     lastActivityAt=millis();
-    if(toggled==UiSelection::Eccentric) eccentricEnabled=!eccentricEnabled;
+    if(toggled==UiSelection::Eccentric) {
+      eccentricEnabled=!eccentricEnabled;
+      // A zero value is the Voltra's disabled setting. Give a newly enabled
+      // modifier a small, visible starting value; later OFF/ON cycles retain
+      // the user's dial-selected value.
+      if(eccentricEnabled && requestedEccentric==0) requestedEccentric=5;
+    }
     else if(toggled==UiSelection::Chains) {
       chainsEnabled=!chainsEnabled;
       if(chainsEnabled) inverseChainsEnabled=false;
+      if(chainsEnabled && requestedChains==0) requestedChains=5;
     }
     else {
       inverseChainsEnabled=!inverseChainsEnabled;
@@ -442,9 +528,22 @@ void loop() {
   if(knobDelta) {
     lastActivityAt=millis();
     UiSelection selection=uiSelection();
-    if(selection==UiSelection::Weight && ready && client && client->isConnected())
-      pendingWeightDelta=constrain(pendingWeightDelta+knobDelta,-225,225);
-    else if(selection==UiSelection::Weight && targetInitialized) target=constrain(target+knobDelta,5,230);
+    if(selection==UiSelection::None) {
+      Serial.println("Dial ignored: tap LBS or a modifier label to select what to adjust");
+      return;
+    }
+    if(selection==UiSelection::Weight) {
+      const int weightDelta=acceleratedWeightDelta(knobDelta);
+      if(ready && client && client->isConnected()) {
+        pendingWeightDelta=constrain(pendingWeightDelta+weightDelta,-225,225);
+        if(confirmedWeight>=5 && confirmedWeight<=230) {
+          target=constrain(int(confirmedWeight)+pendingWeightDelta,5,230);
+          targetInitialized=true;
+        }
+      } else if(targetInitialized) target=constrain(target+weightDelta,5,230);
+      Serial.printf("Weight dial: detents=%d applied_step=%d requested=%d lb\n",
+                    knobDelta,knobDelta?abs(weightDelta/knobDelta):0,target);
+    }
     else if(selection==UiSelection::Eccentric) requestedEccentric=constrain(requestedEccentric+knobDelta,-195,195);
     else if(selection==UiSelection::Chains) requestedChains=constrain(requestedChains+knobDelta,0,100);
     else requestedInverseChains=constrain(requestedInverseChains+knobDelta,0,100);
@@ -467,13 +566,15 @@ void loop() {
   UiButtonAction button=uiTakeButtonAction();
   if(button!=UiButtonAction::None) lastActivityAt=millis();
   if(button==UiButtonAction::Stop) {
-    pendingAction=PendingAction::None; loadStep=LoadStep::Idle; polling=false; enabled=false; activationTriggered=false; dropArmed=false;
-    Serial.println(send(protocol::stop)?"Double-click STOP written; verify release on device":"STOP failed; use Voltra controls");
-  } else if(button==UiButtonAction::ApplyWeight && activationTriggered) {
+    pendingAction=PendingAction::None; loadStep=LoadStep::Idle; polling=false; enabled=false; activationRequested=false; dropArmed=false; motorStateKnown=false;
+    bool stopped=send(protocol::stop); if(stopped) queryCurrentSettings();
+    Serial.println(stopped?"Double-click STOP written; awaiting unloaded device report":"STOP failed; use Voltra controls");
+  } else if(button==UiButtonAction::ApplyWeight && (activationRequested || confirmedLoaded)) {
     pendingAction=PendingAction::None; loadStep=LoadStep::Idle; polling=false;
-    activationTriggered=false; enabled=false; dropArmed=false;
-    Serial.println(send(protocol::stop)
-      ?"Center tap STOP written; verify release on device"
+    activationRequested=false; enabled=false; dropArmed=false; motorStateKnown=false;
+    bool stopped=send(protocol::stop); if(stopped) queryCurrentSettings();
+    Serial.println(stopped
+      ?"Center tap STOP written; awaiting unloaded device report"
       :"Center tap STOP failed; use Voltra controls");
   } else if(button==UiButtonAction::ApplyWeight || button==UiButtonAction::GuidedLoad) {
     if(!ready || !client || !client->isConnected()) {
@@ -491,7 +592,7 @@ void loop() {
   }
   // A mode response must follow this knob event/query. Never authorize from a
   // boot/reconnect report, a stale report, or a locally requested mode.
-  if(dropEnabled && activationTriggered && dropArmed && lastReturnAt && lastRepAt==lastReturnAt &&
+  if(dropEnabled && activationRequested && dropArmed && lastReturnAt && lastRepAt==lastReturnAt &&
      pendingAction==PendingAction::None && loadStep==LoadStep::Idle && !polling &&
      millis()-lastReturnAt>=uint32_t(dropHoldSeconds)*1000) {
     dropArmed=false;
@@ -554,22 +655,24 @@ void loop() {
   if(loadStep==LoadStep::SettleAfterStop && millis()-loadStepAt>=500) {
     loadStep=LoadStep::Idle;
     if(sendWeight(target) && send(protocol::trigger)) {
-      activationTriggered=true;
+      activationRequested=true;
       polling=true; pollStart=lastPoll=millis();
+      queryCurrentSettings();
       Serial.println("Guided-load trigger written. Activation remains device-unconfirmed; double-click to STOP.");
     }
   }
   if(loadStep==LoadStep::StartAfterSetup && millis()-loadStepAt>=300) {
     loadStep=LoadStep::Idle;
     if(send(protocol::workoutGo)) {
-      activationTriggered=true;
-      Serial.printf("Normal workout GO written at %d lb; motor state remains device-unconfirmed\n",target);
+      activationRequested=true;
+      queryCurrentSettings();
+      Serial.printf("Normal workout GO written at %d lb; awaiting motor-state report\n",target);
     }
   }
   // Some firmware versions omit inverse chains from their pushed settings
   // cascade. Periodically read the canonical register list while safely idle.
   // This is read-only and intentionally does not reset the idle-sleep timer.
-  if(ready && client && client->isConnected() && !activationTriggered &&
+  if(ready && client && client->isConnected() && !activationRequested && !confirmedLoaded &&
      !polling && loadStep==LoadStep::Idle && pendingAction==PendingAction::None &&
      millis()-lastSettingsPollAt>=kSettingsPollMs) {
     queryCurrentSettings();
@@ -577,13 +680,13 @@ void loop() {
   uiTick(target,requestedEccentric,requestedChains,requestedInverseChains,
          int(confirmedWeight),int(confirmedEccentric),int(confirmedChains),int(confirmedInverseChains),
          eccentricEnabled,chainsEnabled,inverseChainsEnabled,
-         activationTriggered,dropEnabled,dropAmount,dropHoldSeconds,dropArmed,autoSleepEnabled,
+         confirmedLoaded,dropEnabled,dropAmount,dropHoldSeconds,dropArmed,autoSleepEnabled,
          client && client->isConnected());
   if (ready && (!client || !client->isConnected())) {
-    ready=enabled=polling=false; activationTriggered=false; dropArmed=false; writer=nullptr;
+    ready=enabled=polling=false; activationRequested=false; confirmedLoaded=false; motorStateKnown=false; dropArmed=false; writer=nullptr;
     confirmedMode=ConfirmedMode::Unknown; modeConfirmedAt=0;
-    confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=-32768;
-    weightConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false;
+    confirmedWeight=confirmedEccentric=confirmedChains=confirmedInverseChains=confirmedMotorState=-32768;
+    weightConfirmedAt=motorConfirmedAt=0; pendingWeightDelta=0; target=0; targetInitialized=false;
     pendingAction=PendingAction::None; loadStep=LoadStep::Idle;
     Serial.println("Disconnected. Motor state unknown. No automatic replay or reconnect.");
   }
@@ -600,7 +703,7 @@ void loop() {
   }
   // Deep sleep is only allowed while this controller is safely idle. It never
   // runs during activation, a load sequence, or a pending Voltra request.
-  if(autoSleepEnabled && !activationTriggered && !dropArmed &&
+  if(autoSleepEnabled && !activationRequested && !confirmedLoaded && motorStateKnown && !dropArmed &&
      pendingAction==PendingAction::None && loadStep==LoadStep::Idle && !polling &&
      millis()-lastActivityAt>=kAutoSleepMs) {
     Serial.println("AUTO SLEEP: 15 minutes idle; entering deep sleep");

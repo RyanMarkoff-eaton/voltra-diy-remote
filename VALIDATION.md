@@ -16,17 +16,25 @@
 - 480×480 display, CST826 touch, and rotary encoder initialization.
 - BLE scan, Voltra connection, handshake, mode read, and base-weight read.
 - No resistance command is sent on boot or reconnect.
+- Settings synchronization reads base weight, Chains, Eccentric, training mode,
+  inverse-chain direction, and motor control. A reported motor value of `0` or
+  `1` is tracked as unloaded or loaded for the tested single-device flow.
 
 ## Still experimental
 
 - Guided load and automatic drop sets have packet-level validation but require
   controlled physical validation on each Voltra firmware version.
 - A successful BLE write is not proof that Voltra changed its motor state.
+- Incoming BLE data is buffered and decoded only after a complete checksum-valid
+  frame is available; short and type-`09` extended frame lengths are handled.
 - Inverse Chain writes its direction selector as a typed one-byte setting and
   then uses the standard Chain value command. This path passed packet checks
   and was verified on the reference Voltra at a low setting. Voltra firmware
   and account feature availability may still vary; confirm the setting on the
   Voltra display before training.
+- Modifier enable/disable is mode-gated and starts a zero-valued newly enabled
+  Eccentric or Chains setting at 5 lb. The BLE write still requires a device
+  readback before it is treated as confirmed.
 - Auto sleep is ESP32 deep sleep, not a physical battery disconnect. It wakes
   with RESET or restored 5 V.
 - The 201–230 lb range is a user-specific beta extension; public upstream

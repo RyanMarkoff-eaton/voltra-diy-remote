@@ -21,8 +21,8 @@ static volatile int pending = 0;
 static volatile uint8_t previous = 0;
 static volatile int quarterSteps = 0;
 static UiButtonAction buttonAction = UiButtonAction::None;
-static UiSelection selected = UiSelection::Weight;
-static UiSelection modifierToggle = UiSelection::Weight;
+static UiSelection selected = UiSelection::None;
+static UiSelection modifierToggle = UiSelection::None;
 enum class UiPage : uint8_t { Main, DropSets };
 static UiPage page=UiPage::Main;
 static UiDropEdit dropEdit=UiDropEdit::None;
@@ -108,15 +108,21 @@ static void modifierRow(int y,const char* label,int value,int base,int confirmed
                         uint16_t accent,UiSelection row) {
   bool active=selected==row;
   uint16_t edge=enabled?accent:color(70,70,70);
-  if(active) screen.fillRoundRect(70,y-4,340,42,18,color(40,40,40));
-  screen.drawRoundRect(70,y-4,340,42,18,edge);
-  screen.fillCircle(91,y+17,7,edge);
-  screen.setTextSize(2); screen.setTextColor(edge); screen.setCursor(108,y+9); screen.print(label);
+  // The dial target needs more than a subtle gray fill: make its entire row
+  // use the setting's color, while an unselected row remains transparent.
+  if(active) screen.fillRoundRect(70,y-4,340,42,18,accent);
+  screen.drawRoundRect(70,y-4,340,42,18,active?color(15,15,20):edge);
+  // A large explicit toggle target is easier to use than the former dot.
+  screen.fillRoundRect(78,y+2,78,30,12,active?color(25,25,30):(enabled?accent:color(52,52,58)));
+  screen.drawRoundRect(78,y+2,78,30,12,accent);
+  screen.setTextSize(1); screen.setTextColor((active || !enabled)?accent:color(15,15,20));
+  screen.setCursor(enabled?101:98,y+13); screen.print(enabled?"ON":"OFF");
+  screen.setTextSize(2); screen.setTextColor(active?color(15,15,20):edge); screen.setCursor(170,y+9); screen.print(label);
   int pct=base?lroundf(value*100.0f/base):0;
   char amount[30]; snprintf(amount,sizeof(amount),"%+d lb  %+d%%",value,pct);
-  screen.setTextColor(color(235,235,235)); screen.setCursor(235,y+9); screen.print(amount);
+  screen.setTextColor(active?color(15,15,20):color(235,235,235)); screen.setCursor(235,y+9); screen.print(amount);
   int effective=enabled?value:0;
-  screen.setTextSize(1); screen.setTextColor(confirmed==effective?color(100,210,130):color(180,150,80));
+  screen.setTextSize(1); screen.setTextColor(active?color(15,15,20):(confirmed==effective?color(100,210,130):color(180,150,80)));
   screen.setCursor(350,y+25);
   if(!enabled) screen.print("OFF / SAVED");
   else screen.print(confirmed==effective?"ON / CONFIRMED":"ON / UNVERIFIED");
@@ -176,10 +182,16 @@ static void render(int weight,int eccentric,int chains,int inverseChains,
       const auto& digit=uiAssets::digits[*p-'0'];
       mask(digit,x,122,activationTriggered?240:105,25); x+=digit.w+2;
     }
-    centered(uiAssets::lbs,238,activationTriggered?235:105,25);
   } else {
     textCentered(connected?"READING VOLTRA":"BLE OFFLINE",185,2,color(130,130,140));
   }
+  // Separate selection target from the number's Load/Unload touch area.
+  const bool weightSelected=selected==UiSelection::Weight;
+  const uint16_t weightButton=color(110,178,226);
+  if(weightSelected) screen.fillRoundRect(192,234,96,40,12,weightButton);
+  screen.drawRoundRect(192,234,96,40,12,weightButton);
+  screen.setTextSize(2); screen.setTextColor(weightSelected?color(15,15,20):weightButton);
+  screen.setCursor(219,246); screen.print("LBS");
   modifierRow(286,"ECC",eccentric,weight,confirmedEccentric,eccentricEnabled,color(255,145,55),UiSelection::Eccentric);
   modifierRow(330,"CHAIN",chains,weight,confirmedChains,chainsEnabled,color(55,205,225),UiSelection::Chains);
   modifierRow(374,"INV",inverseChains,weight,confirmedInverseChains,inverseChainsEnabled,color(185,105,255),UiSelection::InverseChains);
@@ -215,7 +227,7 @@ int uiTakeEncoderDelta() {
 }
 UiSelection uiSelection() { return selected; }
 UiSelection uiTakeModifierToggle() {
-  UiSelection result=modifierToggle; modifierToggle=UiSelection::Weight; return result;
+  UiSelection result=modifierToggle; modifierToggle=UiSelection::None; return result;
 }
 bool uiTakeDropToggle() { bool result=dropToggle; dropToggle=false; return result; }
 bool uiTakeSleepToggle() { bool result=sleepToggle; sleepToggle=false; return result; }
@@ -242,8 +254,10 @@ void uiTick(int weight,int eccentric,int chains,int inverseChains,
       touchStartX=x; touchStartY=y; touchStartAt=now; touchHoldFired=false;
     }
     if(down) { touchLastX=x; touchLastY=y; }
-    if(down && touchDown && !touchHoldFired && touchStartX>=145 && touchStartX<=335 &&
-       touchStartY>=112 && touchStartY<=254 && now-touchStartAt>=1000) {
+    if(page==UiPage::Main && down && touchDown && !touchHoldFired &&
+       abs(x-touchStartX)<20 && abs(y-touchStartY)<20 &&
+       touchStartX>=145 && touchStartX<=335 &&
+       touchStartY>=112 && touchStartY<230 && now-touchStartAt>=1000) {
       touchHoldFired=true; buttonAction=UiButtonAction::GuidedLoad;
     }
     if(!down && touchDown) {
@@ -257,14 +271,26 @@ void uiTick(int weight,int eccentric,int chains,int inverseChains,
         else if(touchStartY>=325 && touchStartY<380) sleepToggle=true;
       } else if(touchStartX>=198 && touchStartX<=282 && touchStartY>=60 && touchStartY<=105)
         buttonAction=UiButtonAction::Stop;
-      else if(touchStartY>=277 && touchStartY<321) selected=modifierToggle=UiSelection::Eccentric;
-      else if(touchStartY>=321 && touchStartY<365) selected=modifierToggle=UiSelection::Chains;
-      else if(touchStartY>=365 && touchStartY<455) selected=modifierToggle=UiSelection::InverseChains;
-      else {
-        selected=UiSelection::Weight;
-        if(!touchHoldFired && touchStartX>=145 && touchStartX<=335 && touchStartY>=112 && touchStartY<=254)
-          buttonAction=UiButtonAction::ApplyWeight;
+      else if(abs(dx)<20 && abs(touchLastY-touchStartY)<20 &&
+              touchStartX>=192 && touchStartX<=288 && touchStartY>=234 && touchStartY<274) {
+        selected=selected==UiSelection::Weight?UiSelection::None:UiSelection::Weight;
       }
+      else if(abs(dx)<20 && abs(touchLastY-touchStartY)<20 &&
+              touchStartX>=70 && touchStartX<=410 && touchStartY>=282 && touchStartY<412) {
+        UiSelection row=touchStartY<324?UiSelection::Eccentric:
+          touchStartY<368?UiSelection::Chains:UiSelection::InverseChains;
+        if(touchStartX<164) {
+          modifierToggle=row;
+          // A toggle is an action, not a dial target. Clear its old selection
+          // immediately so the filled selection background cannot stick.
+          selected=UiSelection::None;
+        } else {
+          selected=selected==row?UiSelection::None:row;
+        }
+      }
+      else if(!touchHoldFired && abs(dx)<20 && abs(touchLastY-touchStartY)<20 &&
+              touchStartX>=145 && touchStartX<=335 && touchStartY>=112 && touchStartY<230)
+        buttonAction=UiButtonAction::ApplyWeight;
     }
     touchDown=down;
   }
